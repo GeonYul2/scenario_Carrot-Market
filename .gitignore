@@ -1,0 +1,30 @@
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Build artifacts and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.*
+
+# Gemini CLI specific ignores
+.geminiignore
+
+# Python specific (if any Python scripts are added later)
+__pycache__/
+*.pyc
+*.pyd
+.venv/
+venv/
