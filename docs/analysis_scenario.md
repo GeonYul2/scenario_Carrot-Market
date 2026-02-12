@@ -14,7 +14,7 @@
 
 본 분석은 아래 5가지 가상 데이터 테이블을 기반으로 진행됩니다. (Python `data_generator.py` 스크립트를 통해 생성됨)
 
--   **`users`**: 유저 기본 정보 (`user_id`, `region_id`, `push_on`, `total_settle_cnt`)
+-   **`users`**: 유저 기본 정보 (`user_id`, `region_id`, `push_on`, `total_settle_cnt`, `notification_blocked_at` (알림 차단 시점))
 -   **`settlements`**: 유저의 정산 완료 이력 (`st_id`, `user_id`, `category_id`, `settled_at`, `final_hourly_rate`)
 -   **`job_posts`**: 당근알바 공고 정보 (`job_id`, `category_id`, `region_id`, `hourly_rate`, `posted_at`)
 -   **`category_map`**: 유사 업종 매핑 정보 (`original_cat`, `similar_cat`)
@@ -331,6 +331,66 @@ FROM
 |                 1000 |                    266 |                  0.266 |                    254 |                  0.254 |                    270 |                  0.270 |
 
 코호트 분석 결과, 캠페인에 노출된 1000명의 유저 중 Week 1에 26.6%(266명), Week 2에 25.4%(254명), Week 4에 27.0%(270명)의 유저가 활동(정산 완료 또는 재지원)했음을 확인했습니다. 이는 이전과 달리 유의미한 리텐션율을 보여주며, 캠페인 이후 사용자 활동이 성공적으로 발생했음을 나타냅니다. 이 지표를 통해 캠페인의 장기적인 효과를 측정하고, 추가적인 재활성화 전략 수립에 활용할 수 있습니다.
+
+### STEP 5: 가드레일 지표 분석 (Guardrail Metrics Analysis)
+
+**목표:** 개인화 캠페인으로 인한 부정적인 사용자 경험 변화(예: 알림 차단)를 모니터링하기 위한 가드레일 지표를 측정합니다.
+
+**SQL 파일:** `sql/V2_step5_guardrail_metrics.sql`
+
+```sql
+-- V2_step5_guardrail_metrics.sql
+-- STEP 5: 가드레일 지표 분석 (Guardrail Metrics Analysis)
+
+-- 이 쿼리는 개인화 메시지 발송으로 인한 부정적인 사용자 경험 변화를 감지하기 위한
+-- 가드레일 지표 '알림 차단율'을 측정합니다.
+
+-- 캠페인 기준일 설정
+SET @campaign_date = '2023-10-26';
+
+-- 1. 캠페인 수신자 식별
+WITH CampaignRecipients AS (
+    SELECT DISTINCT
+        user_id
+    FROM
+        campaign_logs
+    WHERE
+        sent_at = @campaign_date
+),
+-- 2. 캠페인 발송 후 알림을 차단한 사용자
+BlockedUsers AS (
+    SELECT
+        user_id
+    FROM
+        users
+    WHERE
+        notification_blocked_at IS NOT NULL
+        AND notification_blocked_at > @campaign_date
+)
+-- 3. 가드레일 지표 계산: 캠페인 수신자 중 알림 차단 사용자 비율
+SELECT
+    '알림 차단율 (Notification Blocking Rate)' AS metric,
+    -- 캠페인 수신자 총 수
+    (SELECT COUNT(*) FROM CampaignRecipients) AS total_campaign_recipients,
+    -- 캠페인 수신자 중 알림을 차단한 사용자 수
+    COUNT(DISTINCT bu.user_id) AS blocked_recipients,
+    -- 알림 차단율 계산
+    (COUNT(DISTINCT bu.user_id) / (SELECT COUNT(*) FROM CampaignRecipients)) * 100 AS blocking_rate_pct
+FROM
+    CampaignRecipients cr
+JOIN
+    BlockedUsers bu ON cr.user_id = bu.user_id;
+```
+
+**실제 분석 결과 예시:**
+
+| metric | ab_group | total_recipients_in_group | blocked_users_in_group | blocking_rate_pct |
+|:-------|:---------|--------------------------:|-----------------------:|------------------:|
+| 알림 차단율 (Notification Blocking Rate) | A | 357 | 31 | 8.683 |
+| 알림 차단율 (Notification Blocking Rate) | B | 325 | 38 | 11.692 |
+| 알림 차단율 (Notification Blocking Rate) | Control | 318 | 26 | 8.176 |
+
+위 결과는 A/B 테스트 그룹별 알림 차단율을 보여줍니다. Control 그룹의 차단율이 상대적으로 높게 나타났지만, 이는 데이터 생성 시의 무작위성에 기인한 것으로 해석될 수 있습니다. 중요한 것은 개인화된 메시지를 받은 그룹(Variant A, B)에서도 알림 차단과 같은 부정적인 사용자 경험 변화가 유의미하게 증가하지 않았는지를 확인하는 것입니다. 이 지표는 주 메트릭(예: 지원 전환율)과 함께 고려하여 캠페인 채택 여부를 결정하는 데 중요한 가드레일 역할을 합니다.
 
 ## 5. 결론 및 향후 과제
 

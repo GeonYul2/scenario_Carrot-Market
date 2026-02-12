@@ -28,3 +28,10 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+
+# Generated data files
+data/*.csv
+scripts/data/*.csv
+
+# Specific script to ignore
+scripts/data_generator.py

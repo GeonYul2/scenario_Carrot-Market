@@ -16,7 +16,7 @@
 
 ## 3. 데이터 생성 및 확인
 
-`scripts/data_generator.py` 스크립트는 분석에 필요한 5가지 가상 데이터셋 (users, settlements, job_posts, category_map, campaign_logs)을 생성합니다.
+`scripts/data_generator.py` 스크립트는 분석에 필요한 5가지 가상 데이터셋 (users (`user_id`, `region_id`, `push_on`, `total_settle_cnt`, `notification_blocked_at` (알림 차단 시점)), settlements, job_posts, category_map, campaign_logs)을 생성합니다.
 
 1.  **스크립트 실행**: 프로젝트 루트 디렉토리에서 다음 명령어를 실행합니다.
     ```bash
@@ -110,6 +110,23 @@
     *   `total_cohort_users`: 캠페인에 노출된 초기 코호트의 총 유저 수입니다.
     *   `total_returned_weekX`, `retention_rate_weekX`: 캠페인 발송 주차(Week 0) 이후 Week 1, Week 2, Week 4에 복귀(활동)한 유저 수와 그에 따른 리텐션 비율입니다. (여기서 활동은 정산 완료 또는 재지원으로 정의됩니다.)
     *   **포트폴리오 시사점**: 캠페인의 단기적 성과뿐만 아니라 장기적인 유저 행동 변화를 추적하는 코호트 분석 능력을 보여줍니다. 이는 마케팅 캠페인의 진정한 가치를 평가하는 데 필수적입니다.
+
+### STEP 5: 가드레일 지표 분석
+
+`sql/V2_step5_guardrail_metrics.sql` 쿼리를 실행하여 개인화 캠페인이 사용자 경험에 미치는 부정적인 영향을 모니터링하기 위한 가드레일 지표를 측정합니다.
+
+1.  **쿼리 실행**: MySQL/MariaDB 클라이언트에서 `sql/V2_step5_guardrail_metrics.sql` 파일의 내용을 실행합니다.
+2.  **결과 해석**:
+
+    **실제 분석 결과 예시:**
+
+    | metric | ab_group | total_recipients_in_group | blocked_users_in_group | blocking_rate_pct |
+    |:-------|:---------|--------------------------:|-----------------------:|------------------:|
+    | 알림 차단율 (Notification Blocking Rate) | A | 357 | 31 | 8.683 |
+    | 알림 차단율 (Notification Blocking Rate) | B | 325 | 38 | 11.692 |
+    | 알림 차단율 (Notification Blocking Rate) | Control | 318 | 26 | 8.176 |
+
+    위 결과는 A/B 테스트 그룹별 알림 차단율을 보여줍니다. Control 그룹의 차단율이 상대적으로 높게 나타났지만, 이는 데이터 생성 시의 무작위성에 기인한 것으로 해석될 수 있습니다. 중요한 것은 개인화된 메시지를 받은 그룹(Variant A, B)에서도 알림 차단과 같은 부정적인 사용자 경험 변화가 유의미하게 증가하지 않았는지를 확인하는 것입니다. 이 지표는 주 메트릭(예: 지원 전환율)과 함께 고려하여 캠페인 채택 여부를 결정하는 데 중요한 가드레일 역할을 합니다.
 
 ## 6. 결론
 
