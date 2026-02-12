@@ -68,12 +68,26 @@
 
 1.  **쿼리 실행**: MySQL/MariaDB 클라이언트에서 `sql/V2_step1_churn_definition.sql` 파일의 내용을 실행합니다.
 2.  **결과 해석**:
-    *   `recency_days`: 마지막 정산일로부터 캠페인 발송일(`2023-10-26`)까지 경과한 일수입니다.
-    *   `Q1_Recency`, `Q3_Recency`: 각 `total_settle_cnt` 세그먼트별 Recency 분포의 1분위수와 3분위수입니다.
-    *   `IQR`: 사분위 범위입니다 (`Q3 - Q1`).
-    *   `Churn_Limit`: 이탈자 판단 기준값 (`Q3 + (1.5 * IQR)`)입니다.
-    *   `Churn_Status`: `recency_days`가 `Churn_Limit`을 초과하면 'Churner'로 분류됩니다.
-    *   **포트폴리오 시사점**: 이 쿼리는 `total_settle_cnt`에 따라 이탈 기준이 동적으로 변화하는 세분화된 이탈자 정의 능력을 보여줍니다.
+    *   `recency_days`: 마지막 정산일로부터 캠페인 기준일까지 경과한 일수입니다.
+    *   `Q3_avg_settle_cycle`: `total_settle_cnt`를 기반으로 정의된 `settle_tier`별 '평균 정산 주기' 분포의 3분위수입니다.
+    *   `User_Segment_Status`: `recency_days`가 `Q3_avg_settle_cycle`을 초과하면 'High-Risk Candidate' (고위험군)으로 분류되며, 그렇지 않으면 'Normal User'로 분류됩니다.
+    *   **실제 분석 결과 예시 (일부):**
+
+        | user_id | total_settle_cnt | settle_tier | recency_days | avg_settle_cycle_days | Q3_avg_settle_cycle | User_Segment_Status |
+        |:--------|-----------------:|:------------|-------------:|----------------------:|--------------------:|:--------------------|
+        | user_169 | 1 | Light User | -28 | 43.17 | 36.25 | Normal User |
+        | user_267 | 1 | Light User | -28 | 45.80 | 36.25 | Normal User |
+        | user_290 | 1 | Light User | -28 | 22.75 | 36.25 | Normal User |
+        | user_30 | 1 | Light User | -28 | 187.50 | 36.25 | Normal User |
+        | user_356 | 1 | Light User | -28 | 16.00 | 36.25 | Normal User |
+        | user_537 | 1 | Light User | -28 | 30.50 | 36.25 | Normal User |
+        | user_545 | 1 | Light User | -28 | 43.00 | 36.25 | Normal User |
+        | user_653 | 1 | Light User | -28 | 31.25 | 36.25 | Normal User |
+        | user_790 | 1 | Light User | -28 | 111.00 | 36.25 | Normal User |
+        | user_257 | 1 | Light User | -27 | 71.20 | 36.25 | Normal User |
+
+        위 결과는 `total_settle_cnt`를 기반으로 정의된 `settle_tier`별로 사용자들의 최근 활동성(`recency_days`), 평균 정산 주기(`avg_settle_cycle_days`), 그리고 해당 티어의 평균 정산 주기 3분위수(`Q3_avg_settle_cycle`) 값을 보여줍니다. '고위험군(재활성화 대상)'은 `recency_days`가 해당 세그먼트의 `Q3_avg_settle_cycle`을 초과하는 사용자 (`recency_days > Q3_avg_settle_cycle`)로 정의됩니다. 예를 들어, 'Light User' 티어의 `Q3_avg_settle_cycle`은 36.25일입니다. `user_169`의 `recency_days`가 -28일로 `Q3_avg_settle_cycle`보다 작으므로 'Normal User'로 분류됩니다. 이처럼 `recency_days`가 음수인 경우는 캠페인 기준일(`2023-10-26`) 이후에도 활동이 있었음을 의미하며, 이들은 고위험군에 해당하지 않습니다. 이 방식은 사용자의 활동 빈도 패턴에 따라 개인화된 '고위험군' 정의가 가능함을 보여줍니다.
+    *   **포트폴리오 시사점**: 이 쿼리는 `total_settle_cnt`에 따라 이탈 기준이 동적으로 변화하는 세분화된 고위험군(재활성화 대상) 정의 능력을 보여줍니다.
 
 ### STEP 2: 개인화 매칭 로직
 

@@ -1,78 +1,97 @@
 -- V2_step1_churn_definition.sql
--- STEP 1: 세그먼트화된 IQR 기반의 재활성화 대상 정의
+-- STEP 1: 활동 빈도 기반 고위험군(재활성화 대상) 정의
 
--- 가정:
--- 최근 활동(Recency) 계산을 위한 '현재 날짜'는 캠페인 발송일입니다 (2023-10-26).
--- 사용자 및 정산 데이터가 사용 가능하다고 가정합니다.
+-- 이 쿼리는 사용자의 총 정산 횟수(total_settle_cnt)를 기반으로 세그먼트를 나누고,
+-- 각 사용자별 '평균 정산 주기' 분포를 분석하여 '평소보다 비활동적인 상태'인 고위험군을 정의합니다.
 
 -- 캠페인 분석 기준일 설정
 SET @campaign_date = '2023-10-26';
 
-WITH UserLastSettlement AS (
-    -- 사용자별 마지막 정산일을 계산합니다.
+-- 1. 사용자별 정산 이력 및 활동 기간 계산
+WITH UserSettlementHistory AS (
     SELECT
-        u.user_id,             -- 사용자 고유 ID
-        u.total_settle_cnt,    -- 사용자의 총 정산 횟수
-        MAX(s.settled_at) AS last_settled_at -- 각 사용자의 가장 최근 정산일
+        s.user_id,
+        u.total_settle_cnt,
+        MIN(s.settled_at) AS first_settled_at,
+        MAX(s.settled_at) AS last_settled_at,
+        COUNT(s.st_id) AS actual_settle_count,
+        DATEDIFF(MAX(s.settled_at), MIN(s.settled_at)) AS total_active_days -- 첫 정산부터 마지막 정산까지의 기간
     FROM
-        users u
+        settlements s
     JOIN
-        settlements s ON u.user_id = s.user_id
+        users u ON s.user_id = u.user_id
     GROUP BY
-        u.user_id, u.total_settle_cnt
+        s.user_id, u.total_settle_cnt
 ),
-UserRecency AS (
-    -- 사용자별 Recency (캠페인 발송일로부터 마지막 정산일까지의 일수)를 계산합니다.
+-- 2. 사용자별 '평균 정산 주기' 계산
+-- (총 활동 기간 / (실제 정산 횟수 - 1)). 정산 횟수가 1인 경우는 주기를 계산할 수 없음.
+UserAvgSettleCycle AS (
     SELECT
         user_id,
         total_settle_cnt,
-        DATEDIFF(@campaign_date, last_settled_at) AS recency_days -- 캠페인 발송일로부터 마지막 정산일까지의 경과 일수
+        last_settled_at,
+        CASE
+            WHEN actual_settle_count > 1 THEN total_active_days / (actual_settle_count - 1)
+            ELSE NULL -- 정산 횟수가 1회인 사용자는 평균 주기 계산 불가
+        END AS avg_settle_cycle_days,
+        DATEDIFF(@campaign_date, last_settled_at) AS recency_days -- 현재 Recency 계산
     FROM
-        UserLastSettlement
+        UserSettlementHistory
 ),
-RankedRecency AS (
-    -- Recency 데이터를 total_settle_cnt별로 4분위수를 계산하여 순위를 매깁니다.
+-- 3. 'total_settle_cnt' 분포를 기반으로 사용자 세그먼트 (티어) 정의
+-- 예시: 1회 정산 사용자는 'Light', 2-5회는 'Regular', 6회 이상은 'Power'
+-- 실제 분포에 따라 기준 조정 필요. 여기서는 예시로 나눔.
+UserSettleTiers AS (
     SELECT
         user_id,
         total_settle_cnt,
+        last_settled_at,
+        avg_settle_cycle_days,
         recency_days,
-        NTILE(4) OVER (PARTITION BY total_settle_cnt ORDER BY recency_days) as quartile_rank -- total_settle_cnt 그룹 내 Recency 4분위 순위
+        CASE
+            WHEN total_settle_cnt = 1 THEN 'Light User'
+            WHEN total_settle_cnt BETWEEN 2 AND 5 THEN 'Regular User'
+            WHEN total_settle_cnt >= 6 THEN 'Power User'
+            ELSE 'Undefined' -- 혹시 모를 경우를 대비
+        END AS settle_tier
     FROM
-        UserRecency
+        UserAvgSettleCycle
+    WHERE
+        avg_settle_cycle_days IS NOT NULL -- 평균 주기 계산 가능한 사용자만 대상
 ),
-SegmentedRecencyStats AS (
-    -- total_settle_cnt 그룹별로 Recency의 Q1(25%)과 Q3(75%) 값을 계산합니다.
+-- 4. 각 'settle_tier'별 '평균 정산 주기' 분포의 Q3 계산
+SegmentedAvgCycleStats AS (
     SELECT
-        total_settle_cnt,
-        -- Q1: 25번째 백분위수 값 (두 번째 사분위수 그룹의 최소값)
-        MIN(CASE WHEN quartile_rank = 2 THEN recency_days END) AS Q1,
-        -- Q3: 75번째 백분위수 값 (네 번째 사분위수 그룹의 최소값)
-        MIN(CASE WHEN quartile_rank = 4 THEN recency_days END) AS Q3
-    FROM
-        RankedRecency
+        settle_tier,
+        MIN(CASE WHEN quartile_rank = 3 THEN avg_settle_cycle_days END) AS Q3_avg_settle_cycle -- 3분위수
+    FROM (
+        SELECT
+            settle_tier,
+            avg_settle_cycle_days,
+            NTILE(4) OVER (PARTITION BY settle_tier ORDER BY avg_settle_cycle_days) as quartile_rank
+        FROM
+            UserSettleTiers
+    ) AS RankedAvgCycle
     GROUP BY
-        total_settle_cnt
+        settle_tier
 )
+-- 5. 고위험군 (재활성화 대상) 정의
 SELECT
-    ur.user_id,
-    ur.total_settle_cnt,
-    ur.recency_days,
-    srs.Q1 AS Q1_Recency,
-    srs.Q3 AS Q3_Recency,
-    (srs.Q3 - srs.Q1) AS IQR,
-    (srs.Q3 + (1.5 * (srs.Q3 - srs.Q1))) AS Churn_Limit,
+    ust.user_id,
+    ust.total_settle_cnt,
+    ust.settle_tier,
+    ust.last_settled_at,
+    ust.recency_days,
+    ust.avg_settle_cycle_days,
+    sas.Q3_avg_settle_cycle,
     CASE
-        -- 여러 번 정산 이력이 있고, Recency가 Q3를 넘어섰지만 이탈 임계값 내에 있는 사용자: 재활성화 대상
-        WHEN ur.total_settle_cnt > 1 AND ur.recency_days > srs.Q3 AND ur.recency_days <= (srs.Q3 + (1.5 * (srs.Q3 - srs.Q1))) THEN 'Re-engagement Candidate'
-        -- 통계적 이탈 임계값을 넘어선 사용자: 이탈자
-        WHEN ur.recency_days > (srs.Q3 + (1.5 * (srs.Q3 - srs.Q1))) THEN 'Churner'
-        -- 그 외 일반 활동 사용자
-        ELSE 'Active User'
+        -- 현재 Recency가 해당 세그먼트의 Q3_avg_settle_cycle을 초과하면 고위험군
+        WHEN ust.recency_days > sas.Q3_avg_settle_cycle THEN 'High-Risk Candidate'
+        ELSE 'Normal User'
     END AS User_Segment_Status
 FROM
-    UserRecency ur
+    UserSettleTiers ust
 JOIN
-    SegmentedRecencyStats srs ON ur.total_settle_cnt = srs.total_settle_cnt
-WHERE srs.Q1 IS NOT NULL AND srs.Q3 IS NOT NULL -- Exclude segments where Q1 or Q3 could not be determined
+    SegmentedAvgCycleStats sas ON ust.settle_tier = sas.settle_tier
 ORDER BY
-    ur.total_settle_cnt, ur.recency_days;
+    ust.total_settle_cnt, ust.recency_days;

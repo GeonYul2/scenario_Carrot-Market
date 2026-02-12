@@ -35,3 +35,6 @@ scripts/data/*.csv
 
 # Specific script to ignore
 scripts/data_generator.py
+
+# Personal documents
+*.pdf
