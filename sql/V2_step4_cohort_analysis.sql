@@ -1,43 +1,40 @@
--- V2_step4_cohort_analysis.sql
--- STEP 4: Long-term Cohort Analysis
+﻿-- V2_step4_cohort_analysis.sql
+-- STEP 4: 코호트 리텐션 분석 (Week1/2/4)
 
--- Campaign date used as anchor for the post-personalization cohort
 SET @campaign_date = '2023-10-26';
 
-WITH InitialCohort AS (
+WITH
+-- [CTE] 캠페인 수신자 코호트
+InitialCohort AS (
     SELECT DISTINCT
         user_id,
         sent_at AS cohort_start_date
     FROM campaign_logs
     WHERE sent_at = @campaign_date
 ),
+-- [CTE] 비교용 선행 코호트(캠페인 비수신 + 다회 정산 이력)
 PreCampaignMultiSettleCohort AS (
     SELECT
         u.user_id,
         MAX(s.settled_at) AS cohort_start_date
     FROM users u
-    JOIN settlements s
-        ON u.user_id = s.user_id
-    LEFT JOIN campaign_logs cl
-        ON u.user_id = cl.user_id
-       AND cl.sent_at = @campaign_date
+    JOIN settlements s ON u.user_id = s.user_id
+    LEFT JOIN campaign_logs cl ON u.user_id = cl.user_id AND cl.sent_at = @campaign_date
     WHERE u.total_settle_cnt > 1
       AND s.settled_at < @campaign_date
       AND cl.user_id IS NULL
     GROUP BY u.user_id
 ),
+-- [CTE] 활동 이벤트 통합 (정산 + 지원)
 UserActivity AS (
-    SELECT
-        user_id,
-        settled_at AS activity_date
+    SELECT user_id, settled_at AS activity_date
     FROM settlements
     UNION ALL
-    SELECT
-        user_id,
-        sent_at AS activity_date
+    SELECT user_id, sent_at AS activity_date
     FROM campaign_logs
     WHERE is_applied = 1
 ),
+-- [CTE] 캠페인 코호트 리텐션 플래그
 CampaignCohortRetention AS (
     SELECT
         'Post-Personalization Cohort' AS cohort_type,
@@ -47,11 +44,10 @@ CampaignCohortRetention AS (
         MAX(CASE WHEN ua.activity_date BETWEEN (ic.cohort_start_date + INTERVAL 8 DAY) AND (ic.cohort_start_date + INTERVAL 14 DAY) THEN 1 ELSE 0 END) AS returned_week2,
         MAX(CASE WHEN ua.activity_date BETWEEN (ic.cohort_start_date + INTERVAL 22 DAY) AND (ic.cohort_start_date + INTERVAL 28 DAY) THEN 1 ELSE 0 END) AS returned_week4
     FROM InitialCohort ic
-    LEFT JOIN UserActivity ua
-        ON ic.user_id = ua.user_id
-       AND ua.activity_date > ic.cohort_start_date
+    LEFT JOIN UserActivity ua ON ic.user_id = ua.user_id AND ua.activity_date > ic.cohort_start_date
     GROUP BY ic.user_id, ic.cohort_start_date
 ),
+-- [CTE] 선행 코호트 리텐션 플래그
 PreCampaignCohortRetention AS (
     SELECT
         'Pre-Personalization Cohort' AS cohort_type,
@@ -61,11 +57,10 @@ PreCampaignCohortRetention AS (
         MAX(CASE WHEN ua.activity_date BETWEEN (pc.cohort_start_date + INTERVAL 8 DAY) AND (pc.cohort_start_date + INTERVAL 14 DAY) THEN 1 ELSE 0 END) AS returned_week2,
         MAX(CASE WHEN ua.activity_date BETWEEN (pc.cohort_start_date + INTERVAL 22 DAY) AND (pc.cohort_start_date + INTERVAL 28 DAY) THEN 1 ELSE 0 END) AS returned_week4
     FROM PreCampaignMultiSettleCohort pc
-    LEFT JOIN UserActivity ua
-        ON pc.user_id = ua.user_id
-       AND ua.activity_date > pc.cohort_start_date
+    LEFT JOIN UserActivity ua ON pc.user_id = ua.user_id AND ua.activity_date > pc.cohort_start_date
     GROUP BY pc.user_id, pc.cohort_start_date
 ),
+-- [CTE] 코호트 통합
 CombinedCohortRetention AS (
     SELECT cohort_type, user_id, cohort_start_date, returned_week1, returned_week2, returned_week4
     FROM CampaignCohortRetention

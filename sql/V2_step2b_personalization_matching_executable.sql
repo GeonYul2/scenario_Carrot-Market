@@ -1,10 +1,12 @@
--- V2_step2b_personalization_matching_executable.sql
--- STEP 2b: Executable Personalization Matching (A/B recipients only)
+﻿-- V2_step2b_personalization_matching_executable.sql
+-- STEP 2b: 실행 매칭 풀 산출 (A/B 발송 대상 전용)
 
 SET @campaign_date = '2023-10-26';
-SET @min_wage_uplift_ratio = 1.10; -- >= 10% wage uplift vs last settled wage
+SET @min_wage_uplift_ratio = 1.10;
 
-WITH UserSettlementHistory AS (
+WITH
+-- [CTE] 사용자별 정산 히스토리
+UserSettlementHistory AS (
     SELECT
         s.user_id,
         u.total_settle_cnt,
@@ -15,6 +17,7 @@ WITH UserSettlementHistory AS (
     JOIN users u ON s.user_id = u.user_id
     GROUP BY s.user_id, u.total_settle_cnt
 ),
+-- [CTE] 평균 이용주기/최근성
 UserAvgSettleCycle AS (
     SELECT
         user_id,
@@ -23,6 +26,7 @@ UserAvgSettleCycle AS (
         DATEDIFF(@campaign_date, last_settled_at) AS recency_days
     FROM UserSettlementHistory
 ),
+-- [CTE] 세그먼트 부여
 UserSettleTiers AS (
     SELECT
         user_id,
@@ -38,6 +42,7 @@ UserSettleTiers AS (
     FROM UserAvgSettleCycle
     WHERE avg_settle_cycle_days IS NOT NULL
 ),
+-- [CTE] 세그먼트별 Q3
 SegmentedAvgCycleStats AS (
     SELECT
         settle_tier,
@@ -51,24 +56,27 @@ SegmentedAvgCycleStats AS (
     ) x
     GROUP BY settle_tier
 ),
+-- [CTE] 고위험군
 HighRiskUsers AS (
     SELECT ust.user_id
     FROM UserSettleTiers ust
-    JOIN SegmentedAvgCycleStats sas
-      ON ust.settle_tier = sas.settle_tier
+    JOIN SegmentedAvgCycleStats sas ON ust.settle_tier = sas.settle_tier
     WHERE ust.recency_days > sas.q3_avg_settle_cycle
 ),
+-- [CTE] 기준일 A/B 발송 대상
 ABRecipients AS (
     SELECT DISTINCT cl.user_id, cl.ab_group
     FROM campaign_logs cl
     WHERE cl.sent_at = @campaign_date
       AND cl.ab_group IN ('A', 'B')
 ),
+-- [CTE] 고위험군 ∩ A/B 수신자 = 실행 타겟
 ExecutableTargets AS (
     SELECT hr.user_id, abr.ab_group
     FROM HighRiskUsers hr
     JOIN ABRecipients abr ON hr.user_id = abr.user_id
 ),
+-- [CTE] 사용자 최근 정산 1건
 UserLastSettlementInfo AS (
     SELECT
         s.user_id,
@@ -78,6 +86,7 @@ UserLastSettlementInfo AS (
     FROM settlements s
     WHERE s.settled_at < @campaign_date
 ),
+-- [CTE] 실행 타겟의 기본 프로필
 CurrentTargetUsers AS (
     SELECT
         u.user_id,
@@ -86,12 +95,10 @@ CurrentTargetUsers AS (
         lsi.last_settle_category,
         lsi.last_final_hourly_rate
     FROM users u
-    JOIN UserLastSettlementInfo lsi
-      ON u.user_id = lsi.user_id
-     AND lsi.rn = 1
-    JOIN ExecutableTargets et
-      ON u.user_id = et.user_id
+    JOIN UserLastSettlementInfo lsi ON u.user_id = lsi.user_id AND lsi.rn = 1
+    JOIN ExecutableTargets et ON u.user_id = et.user_id
 ),
+-- [CTE] 동일/유사 업종 확장
 ExpandedCategory AS (
     SELECT
         ctu.user_id,
@@ -112,9 +119,9 @@ ExpandedCategory AS (
         cm.similar_cat AS category_to_match,
         'similar_category' AS match_basis
     FROM CurrentTargetUsers ctu
-    JOIN category_map cm
-      ON ctu.last_settle_category = cm.original_cat
+    JOIN category_map cm ON ctu.last_settle_category = cm.original_cat
 ),
+-- [CTE] 지역/시급 조건 적용
 MatchedCandidates AS (
     SELECT DISTINCT
         ec.user_id,
@@ -133,6 +140,7 @@ MatchedCandidates AS (
      AND ec.region_id = jp.region_id
      AND jp.hourly_rate >= (ec.last_final_hourly_rate * @min_wage_uplift_ratio)
 ),
+-- [CTE] user_id + job_id 중복 제거
 DeduplicatedCandidates AS (
     SELECT
         mc.*,

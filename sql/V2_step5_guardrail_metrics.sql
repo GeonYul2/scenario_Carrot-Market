@@ -1,9 +1,11 @@
--- V2_step5_guardrail_metrics.sql
--- STEP 5: Guardrail Metrics (High-Risk Target Only)
+﻿-- V2_step5_guardrail_metrics.sql
+-- STEP 5: 가드레일 분석 (고위험군 대상 알림 차단율)
 
 SET @campaign_date = '2023-10-26';
 
-WITH UserSettlementHistory AS (
+WITH
+-- [CTE] 사용자별 정산 히스토리
+UserSettlementHistory AS (
     SELECT
         s.user_id,
         u.total_settle_cnt,
@@ -14,6 +16,7 @@ WITH UserSettlementHistory AS (
     JOIN users u ON s.user_id = u.user_id
     GROUP BY s.user_id, u.total_settle_cnt
 ),
+-- [CTE] 평균 이용주기/최근성
 UserAvgSettleCycle AS (
     SELECT
         user_id,
@@ -22,6 +25,7 @@ UserAvgSettleCycle AS (
         DATEDIFF(@campaign_date, last_settled_at) AS recency_days
     FROM UserSettlementHistory
 ),
+-- [CTE] 세그먼트 부여
 UserSettleTiers AS (
     SELECT
         user_id,
@@ -37,6 +41,7 @@ UserSettleTiers AS (
     FROM UserAvgSettleCycle
     WHERE avg_settle_cycle_days IS NOT NULL
 ),
+-- [CTE] 세그먼트별 Q3
 SegmentedAvgCycleStats AS (
     SELECT
         settle_tier,
@@ -50,13 +55,14 @@ SegmentedAvgCycleStats AS (
     ) x
     GROUP BY settle_tier
 ),
+-- [CTE] 고위험군
 HighRiskUsers AS (
     SELECT ust.user_id
     FROM UserSettleTiers ust
-    JOIN SegmentedAvgCycleStats sas
-      ON ust.settle_tier = sas.settle_tier
+    JOIN SegmentedAvgCycleStats sas ON ust.settle_tier = sas.settle_tier
     WHERE ust.recency_days > sas.q3_avg_settle_cycle
 ),
+-- [CTE] 기준일 고위험군 수신자
 CampaignRecipientsWithGroup AS (
     SELECT DISTINCT
         cl.user_id,
@@ -65,6 +71,7 @@ CampaignRecipientsWithGroup AS (
     JOIN HighRiskUsers hr ON cl.user_id = hr.user_id
     WHERE cl.sent_at = @campaign_date
 ),
+-- [CTE] 기준일 이후 차단 사용자
 BlockedUsers AS (
     SELECT
         user_id,

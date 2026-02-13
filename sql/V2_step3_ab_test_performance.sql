@@ -1,9 +1,11 @@
--- V2_step3_ab_test_performance.sql
--- STEP 3: 3-Arm AB Test Performance (High-Risk Target Only)
+﻿-- V2_step3_ab_test_performance.sql
+-- STEP 3: 고위험군 대상 3그룹 AB 성과 분석
 
 SET @campaign_date = '2023-10-26';
 
-WITH UserSettlementHistory AS (
+WITH
+-- [CTE] 사용자별 정산 히스토리
+UserSettlementHistory AS (
     SELECT
         s.user_id,
         u.total_settle_cnt,
@@ -14,6 +16,7 @@ WITH UserSettlementHistory AS (
     JOIN users u ON s.user_id = u.user_id
     GROUP BY s.user_id, u.total_settle_cnt
 ),
+-- [CTE] 평균 이용주기/최근성
 UserAvgSettleCycle AS (
     SELECT
         user_id,
@@ -22,6 +25,7 @@ UserAvgSettleCycle AS (
         DATEDIFF(@campaign_date, last_settled_at) AS recency_days
     FROM UserSettlementHistory
 ),
+-- [CTE] 세그먼트 부여
 UserSettleTiers AS (
     SELECT
         user_id,
@@ -37,6 +41,7 @@ UserSettleTiers AS (
     FROM UserAvgSettleCycle
     WHERE avg_settle_cycle_days IS NOT NULL
 ),
+-- [CTE] 세그먼트별 Q3
 SegmentedAvgCycleStats AS (
     SELECT
         settle_tier,
@@ -50,13 +55,14 @@ SegmentedAvgCycleStats AS (
     ) x
     GROUP BY settle_tier
 ),
+-- [CTE] 고위험군
 HighRiskUsers AS (
     SELECT ust.user_id
     FROM UserSettleTiers ust
-    JOIN SegmentedAvgCycleStats sas
-      ON ust.settle_tier = sas.settle_tier
+    JOIN SegmentedAvgCycleStats sas ON ust.settle_tier = sas.settle_tier
     WHERE ust.recency_days > sas.q3_avg_settle_cycle
 ),
+-- [CTE] 사용자 단위 반응값(중복 발송 있더라도 최대 1회 반응 처리)
 UserLevelOutcome AS (
     SELECT
         cl.user_id,
@@ -67,6 +73,7 @@ UserLevelOutcome AS (
     WHERE cl.sent_at = @campaign_date
     GROUP BY cl.user_id, cl.ab_group
 ),
+-- [CTE] 그룹별 집계
 GroupPerformance AS (
     SELECT
         ab_group,
@@ -86,6 +93,6 @@ SELECT
         (gp.applications * 1.0 / gp.total_users) -
         (SELECT (applications * 1.0 / total_users) FROM GroupPerformance WHERE ab_group = 'Control')
     ) AS uplift_vs_control,
-    'High-Risk filtered result. Use applications/non_applications for chi-square test.' AS chi_square_guidance
+    'applications/non_applications로 카이제곱 또는 비율검정 수행' AS chi_square_guidance
 FROM GroupPerformance gp
 ORDER BY gp.ab_group;
