@@ -32,7 +32,8 @@ CREATE TABLE users (
     user_id VARCHAR(255) PRIMARY KEY,
     region_id INT,
     push_on TINYINT(1),
-    total_settle_cnt INT
+    total_settle_cnt INT,
+    notification_blocked_at DATE
 );
 """,
         'category_map': """
