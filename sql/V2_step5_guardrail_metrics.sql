@@ -1,7 +1,8 @@
 ﻿-- V2_step5_guardrail_metrics.sql
--- STEP 5: 가드레일 분석 (고위험군 대상 알림 차단율)
+-- STEP 5: 가드레일 분석 (고위험군 + 실행 매칭 성립 유저의 알림 차단율)
 
 SET @campaign_date = '2023-10-26';
+SET @min_wage_uplift_ratio = 1.10;
 
 WITH
 -- [CTE] 사용자별 정산 히스토리
@@ -55,20 +56,69 @@ SegmentedAvgCycleStats AS (
     ) x
     GROUP BY settle_tier
 ),
--- [CTE] 고위험군
+-- [CTE] 고위험군 추출
 HighRiskUsers AS (
     SELECT ust.user_id
     FROM UserSettleTiers ust
     JOIN SegmentedAvgCycleStats sas ON ust.settle_tier = sas.settle_tier
     WHERE ust.recency_days > sas.q3_avg_settle_cycle
 ),
--- [CTE] 기준일 고위험군 수신자
+-- [CTE] 사용자 최근 정산 1건
+UserLastSettlementInfo AS (
+    SELECT
+        s.user_id,
+        s.category_id AS last_settle_category,
+        s.final_hourly_rate AS last_final_hourly_rate,
+        ROW_NUMBER() OVER (PARTITION BY s.user_id ORDER BY s.settled_at DESC) AS rn
+    FROM settlements s
+    WHERE s.settled_at < @campaign_date
+),
+-- [CTE] 고위험군 기본 프로필
+CurrentTargetUsers AS (
+    SELECT
+        u.user_id,
+        u.region_id,
+        lsi.last_settle_category,
+        lsi.last_final_hourly_rate
+    FROM users u
+    JOIN UserLastSettlementInfo lsi ON u.user_id = lsi.user_id AND lsi.rn = 1
+    JOIN HighRiskUsers hr ON u.user_id = hr.user_id
+),
+-- [CTE] 동일/유사 업종 확장
+ExpandedCategory AS (
+    SELECT
+        ctu.user_id,
+        ctu.region_id,
+        ctu.last_settle_category,
+        ctu.last_final_hourly_rate,
+        ctu.last_settle_category AS category_to_match
+    FROM CurrentTargetUsers ctu
+    UNION ALL
+    SELECT
+        ctu.user_id,
+        ctu.region_id,
+        ctu.last_settle_category,
+        ctu.last_final_hourly_rate,
+        cm.similar_cat AS category_to_match
+    FROM CurrentTargetUsers ctu
+    JOIN category_map cm ON ctu.last_settle_category = cm.original_cat
+),
+-- [CTE] 실행 매칭 성립 유저 추출 (지역 + 시급 10%↑)
+ExecutableMatchedUsers AS (
+    SELECT DISTINCT ec.user_id
+    FROM ExpandedCategory ec
+    JOIN job_posts jp
+      ON ec.category_to_match = jp.category_id
+     AND ec.region_id = jp.region_id
+     AND jp.hourly_rate >= (ec.last_final_hourly_rate * @min_wage_uplift_ratio)
+),
+-- [CTE] 기준일 발송자 중 실행 매칭 성립 유저만 유지
 CampaignRecipientsWithGroup AS (
     SELECT DISTINCT
         cl.user_id,
         cl.ab_group
     FROM campaign_logs cl
-    JOIN HighRiskUsers hr ON cl.user_id = hr.user_id
+    JOIN ExecutableMatchedUsers emu ON cl.user_id = emu.user_id
     WHERE cl.sent_at = @campaign_date
 ),
 -- [CTE] 기준일 이후 차단 사용자
@@ -81,7 +131,7 @@ BlockedUsers AS (
       AND notification_blocked_at > @campaign_date
 )
 SELECT
-    'Notification Blocking Rate (High-Risk Target)' AS metric,
+    'Notification Blocking Rate (Executable Matched Target)' AS metric,
     cr.ab_group,
     COUNT(DISTINCT cr.user_id) AS total_recipients_in_group,
     COUNT(DISTINCT bu.user_id) AS blocked_users_in_group,
