@@ -1,4 +1,4 @@
-﻿# Carrot Market CRM Reactivation Analysis Scenario (A-Z)
+﻿# Carrot Market CRM Reactivation Analysis Scenario
 
 ## A. 목표
 - 자주 이용하던 사용자의 활동 중단 위험을 조기 식별하고, 고위험군 대상 CRM 캠페인의 성과를 검증한다.
@@ -60,16 +60,18 @@ erDiagram
     }
 ```
 
-## D. 분석 흐름 (모수 순서)
-1. 전체 10,000명에서 STEP1로 고위험군 정의
-2. 고위험군만 캠페인 타겟으로 선정
-3. 고위험군 세그먼트(Light/Regular/Power) 내부에서 Control/A/B 균등 배정
-4. STEP2(잠재 매칭)와 STEP2b(실행 매칭)를 분리
-5. STEP3/STEP5는 실행 대상 기준으로 성과·가드레일 검증
+## D. 분석 흐름 (상세)
+1. 전체 10,000명에서 활동주기/최근성을 계산해 고위험군을 정의한다.
+2. 고위험군 내부를 Light/Regular/Power 세그먼트로 나누고, 세그먼트별 Q3 임계값을 적용한다.
+3. 캠페인 타겟은 고위험군으로 한정하고, 세그먼트 내부에서 Control/A/B를 균등 배정한다.
+4. 타겟 매칭은 두 단계로 분리한다.
+   - 잠재 매칭: 고위험군 전체에서 추천 가능 풀 진단
+   - 실행 매칭: 실제 A/B 발송 대상에서 개인화 공고 확정
+5. AB 성과는 `apply_rate`, `uplift_vs_control`, `chi-square p-value`로 판단한다.
+6. 가드레일은 동일 타겟에서 `notification blocking rate`를 함께 본다.
+7. 코호트 리텐션은 보조 지표로 후행 관찰한다.
 
----
-
-## E. STEP1 고위험군 정의
+## E. 고위험군 정의
 - 코드: `sql/V2_step1_churn_definition.sql`
 - 판정 로직: `recency_days > 티어별 Q3(avg_settle_cycle)`
 
@@ -80,31 +82,27 @@ erDiagram
 - 고위험군 티어 분포: Light `506`, Regular `1350`, Power `680`
 - 티어별 Q3: Light `26.8`, Regular `22.75`, Power `18.25`
 
-## F. STEP2 잠재 매칭 (진단용)
-- 코드: `sql/V2_step2_personalization_matching.sql`
-- 목적: 고위험군 전체에서 추천 가능 풀의 잠재 규모 확인
-- 조건:
-  - high-risk only
+## F. 개인화 타겟 선정
+- 잠재 매칭 코드: `sql/V2_step2_personalization_matching.sql`
+- 실행 매칭 코드: `sql/V2_step2b_personalization_matching_executable.sql`
+- 공통 조건:
+  - 고위험군 대상
   - 지역 일치 (`job.region_id = user.region_id`)
   - 시급 10% 이상 상승 (`job.hourly_rate >= last_rate * 1.10`)
 
-결과(실측):
+잠재 매칭 결과(진단용):
 - 고위험군 `2536` 중 매칭 성공 `2104`, 미매칭 `432`
-- 추천 후보(유저-공고): `28,491`
-- 유저당 평균 추천 수(매칭 유저 기준): `13.541` (중앙값 `9`)
+- 총 매칭 공고 수: `28,491`
+- 매칭 유저 1인당 평균 공고 수: `13.541` (중앙값 `9`)
 
-## G. STEP2b 실행 매칭 (발송용)
-- 코드: `sql/V2_step2b_personalization_matching_executable.sql`
-- 목적: 실제 개인화 메시지를 보내는 실행 대상(A/B) 기준 매칭
-- 대상: 기준일 A/B 수신자만 (`ab_group in ('A','B')`)
-
-결과(실측):
+실행 매칭 결과(발송용, A/B만):
 - A/B 실행 대상: `1690` (A `846`, B `844`)
 - 실행 매칭 유저: `1411`
-- 실행 추천 후보(유저-공고): `19,470`
+- 총 매칭 공고 수: `19,470`
+- 매칭 유저 1인당 평균 공고 수: `13.799` (중앙값 `9`)
 
-## H. A/B 메시지 정의 (분리)
-- Control: 기준 메시지(비교군)
+## G. 메시지 정의 (A/B 분리)
+- Control: 기준 메시지(비교군, 개인화 미적용)
 - A: 유사 업종 강조 메시지
 - B: 시급 상승 강조 메시지
 
@@ -132,47 +130,47 @@ B 메시지 예시(JSON):
 }
 ```
 
-업종/시급 구조:
-- 업종 유사성: `category_map` 사용
-- 시급 조건: 별도 테이블 없이 계산식으로 처리
-
-## I. STEP3 AB 성과 (고위험군 타겟)
+## H. AB 테스트 설계 및 시뮬레이션 가정
 - 코드: `sql/V2_step3_ab_test_performance.sql`
 - 1차 가설:
-  - H0: Control/A/B apply_rate 동일
-  - H1: 최소 1개 그룹 apply_rate 상이
+  - H0: Control/A/B의 `apply_rate`는 동일
+  - H1: 최소 1개 그룹의 `apply_rate`가 다름
+- 할당 방식:
+  - 고위험군 세그먼트 내부 균등 배정 (stratified balance)
+- 초기 반응 확률 가정(시뮬레이션):
+  - Control: `0.02`
+  - A: 매칭 시 `0.06`, 비매칭 시 `0.03`
+  - B: 매칭 시 `0.14`, 비매칭 시 `0.04`
+- 후속 반응 확률 가정(리텐션 로그 생성):
+  - Base `0.05`, A `0.09`, B `0.16`
+  - B가 초기 반응한 경우 후속 확률 `1.3x` (상한 `0.30`)
 
-분석 모수:
-- 고위험군 타겟 `N=2536`
+## I. AB 결과 + 가드레일
+AB 성과(고위험군 타겟):
 - 그룹 분포: Control `846`, A `846`, B `844`
-
-세그먼트 내 균등 배정 확인:
-- Light: Control `169`, A `169`, B `168`
-- Regular: Control `450`, A `450`, B `450`
-- Power: Control `227`, A `227`, B `226`
-
-성과(실측):
-- Control: `20/846`, `apply_rate=0.023641`
-- A: `45/846`, `apply_rate=0.053191`, `uplift=+0.029551`
-- B: `121/844`, `apply_rate=0.143365`, `uplift=+0.119724`
+- 세그먼트 내 균등 배정:
+  - Light: Control `169`, A `169`, B `168`
+  - Regular: Control `450`, A `450`, B `450`
+  - Power: Control `227`, A `227`, B `226`
+- apply_rate:
+  - Control `20/846` = `0.023641`
+  - A `45/846` = `0.053191` (`uplift=+0.029551`)
+  - B `121/844` = `0.143365` (`uplift=+0.119724`)
 - 카이제곱(3x2): `chi2=96.692068`, `df=2`, `p=1.008e-21`
 
-## J. STEP4 코호트 리텐션
+가드레일(고위험군 타겟, notification_blocking_rate):
+- Control `8.274232%`
+- A `10.756501%`
+- B `10.308057%`
+
+## J. 코호트 리텐션 (보조 지표)
 - 코드: `sql/V2_step4_cohort_analysis.sql`
-- Post 코호트(실측): Week1 `0.0927`, Week2 `0.1045`, Week4 `0.1124`
+- Post 코호트(실측):
+  - Week1 `0.0927`
+  - Week2 `0.1045`
+  - Week4 `0.1124`
 
-## K. STEP5 가드레일 (고위험군 타겟)
-- 코드: `sql/V2_step5_guardrail_metrics.sql`
-- 차단율(실측):
-  - Control `8.274232%`
-  - A `10.756501%`
-  - B `10.308057%`
-
-## L. 의사결정 프레임
-1. STEP3에서 uplift + 유의성 확인
-2. STEP5에서 차단율 악화 여부 확인
+## K. 의사결정 기준
+1. `uplift`와 `p-value`를 동시에 충족하는지 확인
+2. 가드레일(차단율) 악화가 허용 범위 내인지 확인
 3. 전환-피로도 균형 기준으로 운영안 확정
-
-## M. 정합성 점검 방식
-- 문서 수치는 SQL 실행 결과를 기준으로 기록한다.
-- 동일 CSV 입력 + 동일 SQL 실행 순서로 결과 재현 가능하다.
