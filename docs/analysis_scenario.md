@@ -71,12 +71,12 @@ erDiagram
 ## D. 분석 흐름 (도식 + 상세)
 ```mermaid
 flowchart TD
-    A[원천 데이터 로드\nusers/settlements/job_posts/category_map/campaign_logs] --> B[고위험군 산출\nN=2536]
-    B --> C[실행 매칭 필터\n지역 일치 + 시급 10% 상승 + 동일/유사 업종\nN=2103]
-    C --> D1[AB군 분배\nControl / A / B]
-    D1 --> E[1차 성과 평가\napply_rate / uplift / p-value]
-    E --> F[가드레일 평가\nnotification_blocking_rate]
-    F --> G[보조 평가\n코호트 리텐션]
+    A[원천 데이터 로드<br/>users/settlements/job_posts/category_map/campaign_logs] --> B[고위험군 산출<br/>N=2536]
+    B --> C[실행 매칭 필터<br/>지역 일치 + 시급 10% 상승 + 동일/유사 업종<br/>N=2103]
+    C --> D1[AB군 분배<br/>Control / A / B]
+    D1 --> E[1차 성과 평가<br/>apply_rate / uplift / p-value]
+    E --> F[가드레일 평가<br/>notification_blocking_rate]
+    F --> G[보조 평가<br/>코호트 리텐션]
     G --> H[결론 및 의사결정]
 ```
 
